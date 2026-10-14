@@ -15,7 +15,7 @@ The server binary is `build/tlc` in the project root when that file exists and i
 
 The same command is `zed: install dev extension` in the command palette. The `zed` program in a terminal opens files, so those words are not typed there.
 
-Zed builds the small Rust crate in this directory when the extension is installed. That crate starts `tlc lsp`. Rust from rustup has to be installed. Zed also checks out the grammar revision in `extension.toml` and builds it.
+Zed builds the small Rust crate in this directory when the extension is installed. That crate starts `tlc lsp`. The build target is `wasm32-wasip2`. Rustup installs that target on its own. Arch's `rust` package needs `rust-wasm` as well. Zed also checks out the grammar revision in `extension.toml` and builds it.
 
 Hold Ctrl and click a function name to open its definition.
 
