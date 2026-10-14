@@ -1,6 +1,19 @@
 use zed_extension_api::{self as zed, Command, LanguageServerId, Result, Worktree};
 
+const LOCATOR: &str = "tlc";
+const BUILD_TASK: &str = "Build TLC debug binary";
+
 struct TlcExtension;
+
+impl TlcExtension {
+    fn debug_label(adapter: &str) -> String {
+        if adapter == "GDB" {
+            "Debug TLC program (GDB)".to_string()
+        } else {
+            "Debug TLC program".to_string()
+        }
+    }
+}
 
 impl zed::Extension for TlcExtension {
     fn new() -> Self {
@@ -33,6 +46,62 @@ exit 1"#;
             args: vec!["-c".into(), script.into(), "sh".into(), root],
             env: worktree.shell_env(),
         })
+    }
+
+    fn dap_locator_create_scenario(
+        &mut self,
+        locator_name: String,
+        build_task: zed::TaskTemplate,
+        _resolved_label: String,
+        debug_adapter_name: String,
+    ) -> Option<zed::DebugScenario> {
+        if locator_name != LOCATOR || build_task.label != BUILD_TASK {
+            return None;
+        }
+        if debug_adapter_name != "CodeLLDB" && debug_adapter_name != "GDB" {
+            return None;
+        }
+        let config = zed::serde_json::json!({
+            "request": "launch",
+            "program": "$ZED_WORKTREE_ROOT/build/debug/$ZED_RELATIVE_DIR/$ZED_STEM",
+            "cwd": "$ZED_DIRNAME",
+        });
+        Some(zed::DebugScenario {
+            label: Self::debug_label(&debug_adapter_name),
+            adapter: debug_adapter_name,
+            build: Some(zed::BuildTaskDefinition::ByName(BUILD_TASK.to_string())),
+            config: config.to_string(),
+            tcp_connection: None,
+        })
+    }
+
+    fn run_dap_locator(
+        &mut self,
+        locator_name: String,
+        build_task: zed::TaskTemplate,
+    ) -> Result<zed::DebugRequest, String> {
+        if locator_name != LOCATOR {
+            return Err("unknown locator".to_string());
+        }
+        // The build task is `sh -c <script> sh <root> <file> <output>`.
+        let program = build_task
+            .args
+            .last()
+            .cloned()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| "debug build did not name an output".to_string())?;
+        let cwd = build_task.args.iter().rev().nth(1).and_then(|file| {
+            std::path::Path::new(file)
+                .parent()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .filter(|dir| !dir.is_empty())
+        });
+        Ok(zed::DebugRequest::Launch(zed::LaunchRequest {
+            program,
+            cwd,
+            args: Vec::new(),
+            envs: build_task.env,
+        }))
     }
 }
 

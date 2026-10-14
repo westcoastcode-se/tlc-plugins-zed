@@ -30,6 +30,6 @@ In a `.tlc` file:
 
 ## Debug
 
-Open the `.tlc` file and run `debugger: start`. The debug configuration lives in the project's `.zed/debug.json`. It builds the open file with `-g` into `build/debug/` and launches it under CodeLLDB or GDB.
+Open the `.tlc` file and run `debugger: start`. **Debug TLC program** builds that file with `-g` into `build/debug/` and launches it under CodeLLDB. **Debug TLC program (GDB)** uses GDB.
 
 A click in the gutter sets a breakpoint. A file-scope `const` has no address and is not shown.

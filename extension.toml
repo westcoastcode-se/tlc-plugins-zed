@@ -13,3 +13,5 @@ languages = ["TLC"]
 [grammars.tlc]
 repository = "file:///home/per/Projects/tlc/tlc-tree-sitter"
 rev = "7c219f5030b11b6866c0a790450e67b341dedd08"
+
+[debug_locators.tlc]
