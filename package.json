@@ -1,0 +1,13 @@
+{
+  "name": "tree-sitter-tlc",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the TLC language",
+  "main": "bindings/node",
+  "tree-sitter": [
+    {
+      "scope": "source.tlc",
+      "file-types": ["tlc"]
+    }
+  ],
+  "license": "MIT"
+}
