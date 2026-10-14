@@ -1,3 +1,1 @@
-node_modules
-build
-.tree-sitter
+target
