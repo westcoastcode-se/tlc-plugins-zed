@@ -20,6 +20,18 @@ fn expand_tilde(path: &str, home: Option<&str>) -> String {
     }
 }
 
+/// `Some(true)` when `path` is an executable file. `None` when the check itself cannot run.
+fn executable_file(path: &str) -> Option<bool> {
+    let output = zed::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("[ -f \"$1\" ] && [ -x \"$1\" ]")
+        .arg("sh")
+        .arg(path)
+        .output()
+        .ok()?;
+    Some(output.status == Some(0))
+}
+
 fn resolve_configured_path(
     path: &str,
     root: &str,
@@ -35,15 +47,42 @@ fn resolve_configured_path(
             .which(&path)
             .ok_or_else(|| format!("tlc from lsp.tlc.binary.path was not found on PATH: {path}"));
     }
-    if path.starts_with('/') || root.is_empty() {
-        return Ok(path);
+    let full = if path.starts_with('/') || root.is_empty() {
+        path
+    } else {
+        let root = root.trim_end_matches('/');
+        if root.is_empty() {
+            format!("/{path}")
+        } else {
+            format!("{root}/{path}")
+        }
+    };
+    if full.starts_with('/') && executable_file(&full) == Some(false) {
+        return Err(format!(
+            "tlc from lsp.tlc.binary.path is not an executable file: {full}"
+        ));
     }
+    Ok(full)
+}
+
+fn build_tlc(root: &str) -> String {
     let root = root.trim_end_matches('/');
     if root.is_empty() {
-        Ok(format!("/{path}"))
+        "/build/tlc".to_string()
     } else {
-        Ok(format!("{root}/{path}"))
+        format!("{root}/build/tlc")
     }
+}
+
+fn discover_tlc(worktree: &Worktree) -> Result<String> {
+    let root = worktree.root_path();
+    if !root.is_empty() {
+        let candidate = build_tlc(&root);
+        if executable_file(&candidate) == Some(true) {
+            return Ok(candidate);
+        }
+    }
+    worktree.which("tlc").ok_or_else(|| NOT_FOUND.to_string())
 }
 
 impl TlcExtension {
@@ -81,7 +120,9 @@ impl zed::Extension for TlcExtension {
                 }
             }
         }
-        // lsp.tlc.binary.path in Zed settings. arguments replace the default ["lsp"].
+        // Zed launches lsp.tlc.binary.path itself and skips this function.
+        // That launch uses binary.arguments, so the settings list has to include "lsp".
+        // A path with no arguments starts tlc alone.
         if let Some(path) = binary.and_then(|binary| binary.path.as_deref()) {
             if !path.trim().is_empty() {
                 let home = env
@@ -96,25 +137,10 @@ impl zed::Extension for TlcExtension {
             }
         }
 
-        let root = worktree.root_path();
-        // Wasm cannot see the project tree. The shell prefers <root>/build/tlc, then tlc on PATH.
-        if root.is_empty() {
-            let command = worktree.which("tlc").ok_or_else(|| NOT_FOUND.to_string())?;
-            return Ok(Command {
-                command,
-                args: vec!["lsp".into()],
-                env,
-            });
-        }
-        let script = format!(
-            r#"if [ -n "$1" ] && [ -f "$1/build/tlc" ] && [ -x "$1/build/tlc" ]; then exec "$1/build/tlc" lsp; fi
-if command -v tlc >/dev/null 2>&1; then exec tlc lsp; fi
-echo "{NOT_FOUND}" >&2
-exit 1"#
-        );
+        // binary.path is unset. Prefer an executable <root>/build/tlc, then tlc on PATH.
         Ok(Command {
-            command: "/bin/sh".into(),
-            args: vec!["-c".into(), script, "sh".into(), root],
+            command: discover_tlc(worktree)?,
+            args: vec!["lsp".into()],
             env,
         })
     }

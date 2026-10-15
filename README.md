@@ -17,14 +17,17 @@ The language server and the run, check, and debug tasks use the same `tlc` binar
   "lsp": {
     "tlc": {
       "binary": {
-        "path": "/absolute/path/to/tlc"
+        "path": "/absolute/path/to/tlc",
+        "arguments": ["lsp"]
       }
     }
   }
 }
 ```
 
-`binary.arguments` replaces the language server arguments. The default is `["lsp"]`, so a custom list has to include `lsp`. Run, check, and debug ignore `binary.arguments`. `binary.env` is added to the language server environment.
+Zed starts `binary.path` itself and does not ask the extension for a command. `arguments` is that process's argument list, and it has to include `lsp`. A path with no arguments starts `tlc` alone. The compiler then prints its usage text and exits, and Zed reports that the server reset the connection.
+
+When `binary.path` is unset, the extension starts `tlc lsp`. It uses `build/tlc` in the project root when that file is executable, and otherwise `tlc` on `PATH`. Run, check, and debug use that same search order, including `lsp.tlc.binary.path`, and ignore `binary.arguments`. `binary.env` is added to the language server environment.
 
 When `binary.path` names a file that is not executable, the task reports that path and stops.
 
