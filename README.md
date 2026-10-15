@@ -48,7 +48,7 @@ Hold Ctrl and click a function name to open its definition.
 
 In a `.tlc` file:
 
-- `task: spawn` and choose **Run TLC program**. That runs `tlc --run` on the file.
+- `task: spawn` and choose **Run TLC program**. That runs `tlc --run` on the file. The task runs under `/bin/sh`, so it still works when the login shell is fish.
 - **Check TLC program** typechecks the file and does not run it.
 - **Build TLC debug binary** writes an executable with `-g` under `build/debug/`.
 - The line `func main` has a run button. It uses the same run task.

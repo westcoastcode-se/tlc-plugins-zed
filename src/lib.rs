@@ -65,6 +65,28 @@ fn resolve_configured_path(
     Ok(full)
 }
 
+fn task_env<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    env.iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty())
+}
+
+/// Same path as `build-debug` in `languages/tlc/tlc-task.sh` when no output argument is passed.
+fn debug_output(root: &str, relative_dir: &str, stem: &str) -> String {
+    format!("{root}/build/debug/{relative_dir}/{stem}")
+}
+
+/// The `-c` argument in tasks.json is wrapped in single quotes.
+/// Those quotes are shell syntax for task spawn. They are not part of the script.
+fn unquote_debug_script(quoted: &str) -> Option<String> {
+    let script = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    if script.contains('\'') {
+        return None;
+    }
+    Some(script.to_string())
+}
+
 fn build_tlc(root: &str) -> String {
     let root = root.trim_end_matches('/');
     if root.is_empty() {
@@ -163,10 +185,30 @@ impl zed::Extension for TlcExtension {
             "program": "$ZED_WORKTREE_ROOT/build/debug/$ZED_RELATIVE_DIR/$ZED_STEM",
             "cwd": "$ZED_DIRNAME",
         });
+        // `debugger: start` looks the build task up again with no buffer, so a
+        // language task named in `ByName` is invisible. Carry the template.
+        // The extension API drops the task shell, and Zed then quotes each
+        // argument for the login shell. Remove the quotes that task spawn needs
+        // when it joins arguments with spaces. The wrapper has no quotes of its own.
+        let mut template = build_task;
+        if template.args.first().is_some_and(|arg| arg == "-c") {
+            if let Some(script) = template
+                .args
+                .get(1)
+                .and_then(|arg| unquote_debug_script(arg))
+            {
+                template.args[1] = script;
+            }
+        }
         Some(zed::DebugScenario {
             label: Self::debug_label(&debug_adapter_name),
             adapter: debug_adapter_name,
-            build: Some(zed::BuildTaskDefinition::ByName(BUILD_TASK.to_string())),
+            build: Some(zed::BuildTaskDefinition::Template(
+                zed::BuildTaskDefinitionTemplatePayload {
+                    locator_name: None,
+                    template,
+                },
+            )),
             config: config.to_string(),
             tcp_connection: None,
         })
@@ -180,19 +222,25 @@ impl zed::Extension for TlcExtension {
         if locator_name != LOCATOR {
             return Err("unknown locator".to_string());
         }
-        // The build task is `sh -c <script> sh build-debug <file> <output>`.
-        let program = build_task
-            .args
-            .last()
-            .cloned()
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| "debug build did not name an output".to_string())?;
-        let cwd = build_task.args.iter().rev().nth(1).and_then(|file| {
-            std::path::Path::new(file)
-                .parent()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .filter(|dir| !dir.is_empty())
-        });
+        // The build task runs `tlc-task.sh build-debug` and writes
+        // `<root>/build/debug/<relative dir>/<stem>`. Paths stay in the task
+        // environment because Zed joins task args without quoting them.
+        let root = task_env(&build_task.env, "ZED_WORKTREE_ROOT")
+            .ok_or_else(|| "debug build did not set ZED_WORKTREE_ROOT".to_string())?;
+        let stem = task_env(&build_task.env, "ZED_STEM")
+            .ok_or_else(|| "debug build did not set ZED_STEM".to_string())?;
+        let relative_dir = task_env(&build_task.env, "ZED_RELATIVE_DIR").unwrap_or("");
+        let program = debug_output(root, relative_dir, stem);
+        let cwd = task_env(&build_task.env, "ZED_DIRNAME")
+            .map(str::to_string)
+            .or_else(|| {
+                task_env(&build_task.env, "ZED_FILE").and_then(|file| {
+                    std::path::Path::new(file)
+                        .parent()
+                        .map(|dir| dir.to_string_lossy().into_owned())
+                        .filter(|dir| !dir.is_empty())
+                })
+            });
         Ok(zed::DebugRequest::Launch(zed::LaunchRequest {
             program,
             cwd,
@@ -203,3 +251,36 @@ impl zed::Extension for TlcExtension {
 }
 
 zed::register_extension!(TlcExtension);
+
+#[cfg(test)]
+mod tests {
+    use super::{debug_output, unquote_debug_script};
+    use zed_extension_api::serde_json;
+
+    #[test]
+    fn debug_output_matches_the_task_script() {
+        assert_eq!(
+            debug_output("/proj", "src", "main"),
+            "/proj/build/debug/src/main"
+        );
+        assert_eq!(
+            debug_output("/proj", "", "main"),
+            "/proj/build/debug//main"
+        );
+    }
+
+    #[test]
+    fn debug_build_script_unquotes_to_a_fish_safe_wrapper() {
+        let tasks: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../languages/tlc/tasks.json")).unwrap();
+        let build = tasks
+            .iter()
+            .find(|task| task["label"] == "Build TLC debug binary")
+            .unwrap();
+        let quoted = build["args"][1].as_str().unwrap();
+        let script = unquote_debug_script(quoted).unwrap();
+        assert!(!script.contains(['\'', '\\']));
+        assert!(script.starts_with("script=$(base64 -d <<END\n"));
+        assert!(script.contains("exec /bin/sh -c \"$script\" sh \"$@\"\n"));
+    }
+}
