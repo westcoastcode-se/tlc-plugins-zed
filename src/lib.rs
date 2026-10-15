@@ -2,8 +2,49 @@ use zed_extension_api::{self as zed, Command, LanguageServerId, Result, Worktree
 
 const LOCATOR: &str = "tlc";
 const BUILD_TASK: &str = "Build TLC debug binary";
+const NOT_FOUND: &str = "tlc was not found. Set lsp.tlc.binary.path in Zed settings, or build it with: cmake --build build --target tlc";
 
 struct TlcExtension;
+
+fn expand_tilde(path: &str, home: Option<&str>) -> String {
+    let Some(home) = home.filter(|home| !home.is_empty()) else {
+        return path.to_string();
+    };
+    let home = home.trim_end_matches('/');
+    if path == "~" {
+        home.to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        path.to_string()
+    }
+}
+
+fn resolve_configured_path(
+    path: &str,
+    root: &str,
+    home: Option<&str>,
+    worktree: &Worktree,
+) -> Result<String> {
+    let path = expand_tilde(path.trim(), home);
+    if path.is_empty() {
+        return Err("lsp.tlc.binary.path is empty".to_string());
+    }
+    if !path.contains('/') {
+        return worktree
+            .which(&path)
+            .ok_or_else(|| format!("tlc from lsp.tlc.binary.path was not found on PATH: {path}"));
+    }
+    if path.starts_with('/') || root.is_empty() {
+        return Ok(path);
+    }
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        Ok(format!("/{path}"))
+    } else {
+        Ok(format!("{root}/{path}"))
+    }
+}
 
 impl TlcExtension {
     fn debug_label(adapter: &str) -> String {
@@ -22,29 +63,59 @@ impl zed::Extension for TlcExtension {
 
     fn language_server_command(
         &mut self,
-        _language_server_id: &LanguageServerId,
+        language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<Command> {
+        let settings =
+            zed::settings::LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
+        let binary = settings
+            .as_ref()
+            .and_then(|settings| settings.binary.as_ref());
+        let mut env = worktree.shell_env();
+        if let Some(extra) = binary.and_then(|binary| binary.env.as_ref()) {
+            for (key, value) in extra {
+                if let Some((_, slot)) = env.iter_mut().find(|(name, _)| name == key) {
+                    slot.clone_from(value);
+                } else {
+                    env.push((key.clone(), value.clone()));
+                }
+            }
+        }
+        // lsp.tlc.binary.path in Zed settings. arguments replace the default ["lsp"].
+        if let Some(path) = binary.and_then(|binary| binary.path.as_deref()) {
+            if !path.trim().is_empty() {
+                let home = env
+                    .iter()
+                    .find(|(key, _)| key == "HOME")
+                    .map(|(_, value)| value.as_str());
+                let command = resolve_configured_path(path, &worktree.root_path(), home, worktree)?;
+                let args = binary
+                    .and_then(|binary| binary.arguments.clone())
+                    .unwrap_or_else(|| vec!["lsp".to_string()]);
+                return Ok(Command { command, args, env });
+            }
+        }
+
         let root = worktree.root_path();
         // Wasm cannot see the project tree. The shell prefers <root>/build/tlc, then tlc on PATH.
         if root.is_empty() {
-            let command = worktree.which("tlc").ok_or_else(|| {
-                "tlc was not found. Build it with: cmake --build build --target tlc".to_string()
-            })?;
+            let command = worktree.which("tlc").ok_or_else(|| NOT_FOUND.to_string())?;
             return Ok(Command {
                 command,
                 args: vec!["lsp".into()],
-                env: worktree.shell_env(),
+                env,
             });
         }
-        let script = r#"if [ -n "$1" ] && [ -x "$1/build/tlc" ]; then exec "$1/build/tlc" lsp; fi
+        let script = format!(
+            r#"if [ -n "$1" ] && [ -f "$1/build/tlc" ] && [ -x "$1/build/tlc" ]; then exec "$1/build/tlc" lsp; fi
 if command -v tlc >/dev/null 2>&1; then exec tlc lsp; fi
-echo "tlc was not found. Build it with: cmake --build build --target tlc" >&2
-exit 1"#;
+echo "{NOT_FOUND}" >&2
+exit 1"#
+        );
         Ok(Command {
             command: "/bin/sh".into(),
-            args: vec!["-c".into(), script.into(), "sh".into(), root],
-            env: worktree.shell_env(),
+            args: vec!["-c".into(), script, "sh".into(), root],
+            env,
         })
     }
 
@@ -83,7 +154,7 @@ exit 1"#;
         if locator_name != LOCATOR {
             return Err("unknown locator".to_string());
         }
-        // The build task is `sh -c <script> sh <root> <file> <output>`.
+        // The build task is `sh -c <script> sh build-debug <file> <output>`.
         let program = build_task
             .args
             .last()

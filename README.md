@@ -4,7 +4,29 @@ This extension opens `.tlc` files in Zed and runs them with the TLC compiler.
 
 Highlighting comes from the grammar in `tlc-tree-sitter`. Completions, diagnostics, hover, go to definition, and symbols come from `tlc lsp` in the compiler. This extension only starts that server.
 
-The server binary is `build/tlc` in the project root when that file exists and is executable. Otherwise it is `tlc` on `PATH`.
+## Compiler path
+
+The language server and the run, check, and debug tasks use the same `tlc` binary. The search order is:
+
+1. `lsp.tlc.binary.path` in Zed settings. A path in the project's `.zed/settings.json` overrides the same setting in your user settings. A relative path that contains a slash starts at the project root. A path that is `~` or starts with `~/` starts at your home directory. A name with no slash is looked up on `PATH`.
+2. `build/tlc` in the project root, when that file is executable.
+3. `tlc` on `PATH`.
+
+```json
+{
+  "lsp": {
+    "tlc": {
+      "binary": {
+        "path": "/absolute/path/to/tlc"
+      }
+    }
+  }
+}
+```
+
+`binary.arguments` replaces the language server arguments. The default is `["lsp"]`, so a custom list has to include `lsp`. Run, check, and debug ignore `binary.arguments`. `binary.env` is added to the language server environment.
+
+When `binary.path` names a file that is not executable, the task reports that path and stops.
 
 ## Install
 
